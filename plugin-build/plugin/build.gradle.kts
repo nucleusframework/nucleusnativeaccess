@@ -1,18 +1,12 @@
 plugins {
-    kotlin("jvm")
-    `java-gradle-plugin`
+    `kotlin-dsl`
     alias(libs.plugins.pluginPublish)
 }
 
 dependencies {
-    implementation(kotlin("stdlib"))
-    implementation(gradleApi())
-
     // kotlin-compiler-embeddable for PSI parsing (compileOnly — loaded at runtime via isolated Worker classloader)
     compileOnly(libs.kotlin.compiler.embeddable)
-
     compileOnly(libs.kotlin.gradle.plugin)
-
     testImplementation(libs.junit)
 }
 
@@ -49,6 +43,8 @@ publishing {
 */
 
 tasks.register("setupPluginUploadFromEnvironment") {
+    description = "Upload plugin to publish"
+
     doLast {
         val key = System.getenv("GRADLE_PUBLISH_KEY")
         val secret = System.getenv("GRADLE_PUBLISH_SECRET")
