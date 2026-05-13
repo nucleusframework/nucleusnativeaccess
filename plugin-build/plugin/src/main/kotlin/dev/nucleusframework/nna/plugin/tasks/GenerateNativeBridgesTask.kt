@@ -4,68 +4,80 @@ import dev.nucleusframework.nna.plugin.analysis.PsiParseWorkAction
 import org.gradle.api.DefaultTask
 import org.gradle.api.file.ConfigurableFileCollection
 import org.gradle.api.file.DirectoryProperty
-import org.gradle.api.provider.Property
-import org.gradle.api.tasks.Classpath
-import org.gradle.api.tasks.Input
-import org.gradle.api.tasks.InputFiles
-import org.gradle.api.tasks.OutputDirectory
-import org.gradle.api.tasks.PathSensitive
-import org.gradle.api.tasks.PathSensitivity
-import org.gradle.api.tasks.SkipWhenEmpty
-import org.gradle.api.tasks.TaskAction
-import org.gradle.work.DisableCachingByDefault
 import org.gradle.api.model.ObjectFactory
+import org.gradle.api.provider.Property
+import org.gradle.api.tasks.*
+import org.gradle.work.DisableCachingByDefault
 import org.gradle.workers.WorkerExecutor
 import javax.inject.Inject
 
 @DisableCachingByDefault(because = "Bridge generation depends on source analysis that is not yet cacheable")
 abstract class GenerateNativeBridgesTask : DefaultTask() {
 
-    @get:Inject abstract val workerExecutor: WorkerExecutor
-    @get:Inject abstract val objectFactory: ObjectFactory
+    @get:Inject
+    abstract val taskWorkerExecutor: WorkerExecutor
 
-    @get:InputFiles @get:SkipWhenEmpty @get:PathSensitive(PathSensitivity.RELATIVE)
-    abstract val nativeSources: ConfigurableFileCollection
+    @get:Inject
+    abstract val taskObjectFactory: ObjectFactory
 
-    @get:InputFiles @get:PathSensitive(PathSensitivity.RELATIVE)
-    abstract val commonSources: ConfigurableFileCollection
+    @get:InputFiles
+    @get:SkipWhenEmpty
+    @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val taskNativeSources: ConfigurableFileCollection
 
-    @get:Classpath abstract val psiClasspath: ConfigurableFileCollection
-    @get:Input abstract val libName: Property<String>
-    @get:Input abstract val jvmPackage: Property<String>
-    @get:OutputDirectory abstract val outputDir: DirectoryProperty
-    @get:OutputDirectory abstract val jvmOutputDir: DirectoryProperty
-    @get:OutputDirectory abstract val jvmResourcesDir: DirectoryProperty
+    @get:InputFiles
+    @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val taskCommonSources: ConfigurableFileCollection
+
+    @get:Classpath
+    abstract val taskPsiClasspath: ConfigurableFileCollection
+
+    @get:Input
+    abstract val taskLibName: Property<String>
+
+    @get:Input
+    abstract val taskJvmPackage: Property<String>
+
+    @get:OutputDirectory
+    abstract val taskOutputDir: DirectoryProperty
+
+    @get:OutputDirectory
+    abstract val taskJvmOutputDir: DirectoryProperty
+
+    @get:OutputDirectory
+    abstract val taskJvmResourcesDir: DirectoryProperty
 
     @TaskAction
     fun generate() {
-        outputDir.get().asFile.apply { deleteRecursively(); mkdirs() }
-        jvmOutputDir.get().asFile.apply { deleteRecursively(); mkdirs() }
+        taskOutputDir.get().asFile.apply { deleteRecursively(); mkdirs() }
+        taskJvmOutputDir.get().asFile.apply { deleteRecursively(); mkdirs() }
 
-        val ktFiles = nativeSources.asFileTree.filter { it.extension == "kt" }.files
-        if (ktFiles.isEmpty()) { logger.lifecycle("kne: No Kotlin sources found, skipping."); return }
+        val ktFiles = taskNativeSources.asFileTree.filter { it.extension == "kt" }.files
+        if (ktFiles.isEmpty()) {
+            logger.lifecycle("kne: No Kotlin sources found, skipping."); return
+        }
 
-        val commonKtFiles = commonSources.asFileTree.filter { it.extension == "kt" }.files
+        val commonKtFiles = taskCommonSources.asFileTree.filter { it.extension == "kt" }.files
         logger.lifecycle("kne: Parsing ${ktFiles.size} native + ${commonKtFiles.size} common source file(s) [PSI]...")
 
         val pluginJarUrl = PsiParseWorkAction::class.java.protectionDomain?.codeSource?.location
-        val pluginJar = objectFactory.fileCollection().apply {
+        val pluginJar = taskObjectFactory.fileCollection().apply {
             pluginJarUrl?.let { from(java.io.File(it.toURI())) }
         }
 
-        val workQueue = workerExecutor.classLoaderIsolation { spec ->
-            spec.classpath.from(psiClasspath)
-            spec.classpath.from(pluginJar)
+        val workQueue = taskWorkerExecutor.classLoaderIsolation {
+            classpath.from(taskPsiClasspath)
+            classpath.from(pluginJar)
         }
 
-        workQueue.submit(PsiParseWorkAction::class.java) { params ->
-            params.nativeSourceFiles.from(ktFiles)
-            params.commonSourceFiles.from(commonKtFiles)
-            params.libName.set(libName)
-            params.jvmPackage.set(jvmPackage)
-            params.nativeBridgesDir.set(outputDir)
-            params.jvmProxiesDir.set(jvmOutputDir)
-            params.jvmResourcesDir.set(jvmResourcesDir)
+        workQueue.submit(PsiParseWorkAction::class.java) {
+            nativeSourceFiles.from(ktFiles)
+            commonSourceFiles.from(commonKtFiles)
+            libName.set(taskLibName)
+            jvmPackage.set(taskJvmPackage)
+            nativeBridgesDir.set(taskOutputDir)
+            jvmProxiesDir.set(taskJvmOutputDir)
+            jvmResourcesDir.set(taskJvmResourcesDir)
         }
     }
 }

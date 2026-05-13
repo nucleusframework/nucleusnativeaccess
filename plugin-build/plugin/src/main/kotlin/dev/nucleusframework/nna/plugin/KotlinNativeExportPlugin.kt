@@ -1,5 +1,6 @@
 package dev.nucleusframework.nna.plugin
 
+import dev.nucleusframework.nna.plugin.catalog.kotlinEmbeddedCompiler
 import dev.nucleusframework.nna.plugin.catalog.kotlinxCoroutineDependency
 import dev.nucleusframework.nna.plugin.catalog.kotlinxCoroutineJvmDependency
 import dev.nucleusframework.nna.plugin.catalog.kotlinxCoroutineTestDependency
@@ -9,6 +10,10 @@ import org.gradle.api.Plugin
 import org.gradle.api.Project
 import org.gradle.api.logging.LogLevel
 import org.gradle.api.tasks.testing.Test
+import org.gradle.kotlin.dsl.create
+import org.gradle.kotlin.dsl.getByType
+import org.gradle.kotlin.dsl.register
+import org.gradle.kotlin.dsl.withType
 import org.jetbrains.kotlin.gradle.dsl.KotlinMultiplatformExtension
 import org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget
 import org.jetbrains.kotlin.gradle.plugin.mpp.NativeBuildType
@@ -33,10 +38,8 @@ import java.io.File
 class KotlinNativeExportPlugin : Plugin<Project> {
 
     override fun apply(project: Project) {
-        val extension = project.extensions.create(
-            "kotlinNativeExport",
-            KotlinNativeExportExtension::class.java,
-        )
+
+        val extension = project.extensions.create<KotlinNativeExportExtension>("kotlinNativeExport")
 
         extension.nativeLibName.convention("nativelib")
         extension.nativePackage.convention("")
@@ -48,7 +51,7 @@ class KotlinNativeExportPlugin : Plugin<Project> {
     }
 
     private fun configureKmp(project: Project, extension: KotlinNativeExportExtension) {
-        val kotlin = project.extensions.getByType(KotlinMultiplatformExtension::class.java)
+        val kotlin = project.extensions.getByType<KotlinMultiplatformExtension>()
 
         val libName = extension.nativeLibName.get()
         val pkg = extension.nativePackage.get()
@@ -100,34 +103,30 @@ class KotlinNativeExportPlugin : Plugin<Project> {
         val commonSources = project.files(if (commonMainDir.exists()) commonMainDir else null)
 
         // ── PSI parser classpath (kotlin-compiler-embeddable for isolated Worker classloader) ──
-        val kotlinVersion = kotlin.coreLibrariesVersion
-        val psiClasspath = project.configurations.create("knePsiClasspath") {
-            it.isCanBeConsumed = false
-            it.isCanBeResolved = true
-            it.isVisible = false
+        val knePsiScope = project.configurations.dependencyScope("knePsiScope").get()
+        val psiClasspath = project.configurations.resolvable("knePsiClasspath") {
+            extendsFrom(knePsiScope)
+            description = "Classpath for KNE PSI resolution"
         }
-        project.dependencies.add("knePsiClasspath", "org.jetbrains.kotlin:kotlin-compiler-embeddable:$kotlinVersion")
+        project.dependencies.add(knePsiScope.name, project.kotlinEmbeddedCompiler)
 
         // ── Code-generation tasks ────────────────────────────────────────────
 
         // Single task generates both native bridges and JVM proxies (PSI parsing + codegen in isolated worker)
-        val generateBridges = project.tasks.register(
-            "generateKneNativeBridges",
-            GenerateNativeBridgesTask::class.java,
-        ) { task ->
-            task.group = "kne"
-            task.description = "Generate Kotlin/Native bridges and JVM FFM proxies"
-            task.nativeSources.from(userNativeSources)
-            task.commonSources.from(commonSources)
-            task.libName.set(libName)
-            task.jvmPackage.set(pkg)
-            task.outputDir.set(nativeBridgesDir)
-            task.jvmOutputDir.set(jvmProxiesDir)
-            task.jvmResourcesDir.set(jvmResourcesDir)
-            task.psiClasspath.from(psiClasspath)
+        val generateBridges = project.tasks.register<GenerateNativeBridgesTask>("generateKneNativeBridges") {
+            group = "kne"
+            description = "Generate Kotlin/Native bridges and JVM FFM proxies"
+            taskNativeSources.from(userNativeSources)
+            taskCommonSources.from(commonSources)
+            taskLibName.set(libName)
+            taskJvmPackage.set(pkg)
+            taskOutputDir.set(nativeBridgesDir)
+            taskJvmOutputDir.set(jvmProxiesDir)
+            taskJvmResourcesDir.set(jvmResourcesDir)
+            taskPsiClasspath.from(psiClasspath)
         }
         // Keep old task name as alias
-        project.tasks.register("generateKneJvmProxies") { it.dependsOn(generateBridges) }
+        project.tasks.register("generateKneJvmProxies") { dependsOn(generateBridges) }
 
         // ── Coroutines dependency (required for suspend function support) ──
         nativeTarget?.let { target ->
@@ -158,28 +157,28 @@ class KotlinNativeExportPlugin : Plugin<Project> {
         kotlin.sourceSets.findByName(jvmMainSourceSetName)?.resources?.srcDir(jvmResourcesDir)
 
         // Ensure compilation waits for generation
-        project.tasks.configureEach { task ->
+        project.tasks.filter { task ->
             val name = task.name
-            if (name.startsWith("compileKotlin") &&
-                (name.contains("Native", ignoreCase = true) || name.contains(nativeTargetTaskName, ignoreCase = true))
-            ) {
-                task.dependsOn(generateBridges)
-            }
-            if (name == "compileKotlin$jvmTaskName" || name == "compileKotlin$jvmMainTaskName") {
-                task.dependsOn(generateBridges)
-            }
+            val isCompileKotlinOrNative = task.name.startsWith("compileKotlin") &&
+                (task.name.contains("Native", ignoreCase = true) || task.name.contains(
+                    nativeTargetTaskName,
+                    ignoreCase = true
+                ))
+
+            val isJvmTask = name == "compileKotlin$jvmTaskName" || name == "compileKotlin$jvmMainTaskName"
+            isJvmTask || isCompileKotlinOrNative
+        }.forEach { task ->
+            task.dependsOn(generateBridges)
         }
 
         // ── Native binaries (both debug + release, like swift-java) ──────────
 
-        kotlin.targets
-            .filterIsInstance<KotlinNativeTarget>()
-            .forEach { target ->
-                target.binaries.sharedLib(
-                    namePrefix = libName,
-                    buildTypes = listOf(NativeBuildType.DEBUG, NativeBuildType.RELEASE),
-                )
-            }
+        kotlin.targets.filterIsInstance<KotlinNativeTarget>().forEach { target ->
+            target.binaries.sharedLib(
+                namePrefix = libName,
+                buildTypes = listOf(NativeBuildType.DEBUG, NativeBuildType.RELEASE),
+            )
+        }
 
         // ── Bundle native lib into JVM resources (zero-config deployment) ────
 
@@ -199,11 +198,11 @@ class KotlinNativeExportPlugin : Plugin<Project> {
             val nativeLibResourceDir = project.layout.buildDirectory.dir("generated/kne/nativeLib")
 
             val buildDir = project.layout.buildDirectory
-            val copyNativeLib = project.tasks.register("copyKneNativeLib") { task ->
-                task.group = "kne"
-                task.description = "Copy native shared library into JVM resources for JAR bundling"
-                task.dependsOn(linkTaskName)
-                task.doLast {
+            val copyNativeLib = project.tasks.register("copyKneNativeLib") {
+                group = "kne"
+                description = "Copy native shared library into JVM resources for JAR bundling"
+                dependsOn(linkTaskName)
+                doLast {
                     val releaseDir = buildDir
                         .dir("bin/$targetAliasName/${libName}ReleaseShared").get().asFile
                     val nativeFile = releaseDir.listFiles()?.firstOrNull { f ->
@@ -213,7 +212,7 @@ class KotlinNativeExportPlugin : Plugin<Project> {
                         val destDir = nativeLibResourceDir.get().asFile.resolve("kne/native/$platform")
                         destDir.mkdirs()
                         nativeFile.copyTo(destDir.resolve(nativeFile.name), overwrite = true)
-                        task.logger.lifecycle("kne: Bundled ${nativeFile.name} → kne/native/$platform/")
+                        logger.lifecycle("kne: Bundled ${nativeFile.name} → kne/native/$platform/")
                     }
                 }
             }
@@ -222,9 +221,9 @@ class KotlinNativeExportPlugin : Plugin<Project> {
             kotlin.sourceSets.findByName(jvmMainSourceSetName)?.resources?.srcDir(nativeLibResourceDir)
 
             // Ensure processResources waits for the native lib copy
-            project.tasks.configureEach { task ->
-                if (task.name == "${jvmTarget.name}ProcessResources" || task.name == "process${jvmMainTaskName}Resources") {
-                    task.dependsOn(copyNativeLib)
+            project.tasks.configureEach {
+                if (name == "${jvmTarget.name}ProcessResources" || name == "process${jvmMainTaskName}Resources") {
+                    dependsOn(copyNativeLib)
                 }
             }
         }
@@ -283,10 +282,10 @@ class KotlinNativeExportPlugin : Plugin<Project> {
         val buildType = extension.buildType.get().replaceFirstChar { it.uppercaseChar() }
         val linkTaskName = "link${libCap}${buildType}Shared$targetCap"
 
-        project.tasks.withType(Test::class.java).configureEach { testTask ->
-            testTask.dependsOn(project.tasks.matching { it.name == linkTaskName })
-            testTask.useJUnitPlatform()
-            testTask.jvmArgs(
+        project.tasks.withType<Test>().configureEach {
+            dependsOn(project.tasks.matching { it.name == linkTaskName })
+            useJUnitPlatform()
+            jvmArgs(
                 "-Djava.library.path=$libraryPath",
                 "--enable-native-access=ALL-UNNAMED",
             )
