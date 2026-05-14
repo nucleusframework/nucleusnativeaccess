@@ -1,24 +1,21 @@
 package dev.nucleusframework.nna.plugin
 
-import dev.nucleusframework.nna.plugin.catalog.kotlinEmbeddedCompiler
-import dev.nucleusframework.nna.plugin.catalog.kotlinxCoroutineDependency
-import dev.nucleusframework.nna.plugin.catalog.kotlinxCoroutineJvmDependency
-import dev.nucleusframework.nna.plugin.catalog.kotlinxCoroutineTestDependency
 import dev.nucleusframework.nna.plugin.tasks.GenerateNativeBridgesTask
 import org.gradle.api.GradleException
 import org.gradle.api.Plugin
 import org.gradle.api.Project
+import org.gradle.api.artifacts.VersionCatalog
+import org.gradle.api.artifacts.VersionCatalogsExtension
 import org.gradle.api.logging.LogLevel
 import org.gradle.api.tasks.testing.Test
-import org.gradle.kotlin.dsl.create
-import org.gradle.kotlin.dsl.getByType
-import org.gradle.kotlin.dsl.register
-import org.gradle.kotlin.dsl.withType
+import org.gradle.kotlin.dsl.*
 import org.jetbrains.kotlin.gradle.dsl.KotlinMultiplatformExtension
+import org.jetbrains.kotlin.gradle.dsl.KotlinProjectExtension
 import org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget
 import org.jetbrains.kotlin.gradle.plugin.mpp.NativeBuildType
 import org.jetbrains.kotlin.gradle.targets.jvm.KotlinJvmTarget
 import java.io.File
+import kotlin.jvm.optionals.getOrNull
 
 /**
  * Main entry point for the kotlin-native-export Gradle plugin.
@@ -108,7 +105,9 @@ class KotlinNativeExportPlugin : Plugin<Project> {
             extendsFrom(knePsiScope)
             description = "Classpath for KNE PSI resolution"
         }
-        project.dependencies.add(knePsiScope.name, project.kotlinEmbeddedCompiler)
+        // using the project kotlin version for embedded kotlin
+        val kotlinVersion = project.extensions.findByType<KotlinProjectExtension>()?.coreLibrariesVersion
+        project.dependencies.add(knePsiScope.name, "org.jetbrains.kotlin:kotlin-compiler-embeddable:$kotlinVersion")
 
         // ── Code-generation tasks ────────────────────────────────────────────
 
@@ -128,21 +127,24 @@ class KotlinNativeExportPlugin : Plugin<Project> {
         // Keep old task name as alias
         project.tasks.register("generateKneJvmProxies") { dependsOn(generateBridges) }
 
-        // ── Coroutines dependency (required for suspend function support) ──
+        // read the kotlinx coroutines version from the catalog otherwise fallback to some version
+        val coroutinesVersion = project.versionCatalog
+            ?.findVersion("kotlinx-coroutines")?.getOrNull()?.toString() ?: "1.11.0"
+
         nativeTarget?.let { target ->
             kotlin.sourceSets.findByName("${target.name}Main")?.dependencies {
-                implementation(project.kotlinxCoroutineDependency)
+                implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:$coroutinesVersion")
             }
         }
         kotlin.sourceSets.findByName("nativeMain")?.dependencies {
-            implementation(project.kotlinxCoroutineDependency)
+            implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:$coroutinesVersion")
         }
 
         kotlin.sourceSets.findByName(jvmMainSourceSetName)?.dependencies {
-            implementation(project.kotlinxCoroutineJvmDependency)
+            implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core-jvm:$coroutinesVersion")
         }
         kotlin.sourceSets.findByName(jvmTestSourceSetName)?.dependencies {
-            implementation(project.kotlinxCoroutineTestDependency)
+            implementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:$coroutinesVersion")
         }
 
         // Wire generated bridges into the native source set (try nativeMain, fall back to <target>Main)
@@ -291,4 +293,10 @@ class KotlinNativeExportPlugin : Plugin<Project> {
             )
         }
     }
+
+    private val Project.versionCatalog: VersionCatalog?
+        get() {
+            val catalogs = project.extensions.getByType<VersionCatalogsExtension>()
+            return catalogs.find("libs").getOrNull()
+        }
 }
