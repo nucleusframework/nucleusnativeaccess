@@ -49,6 +49,7 @@ data class KneEnum(
     val simpleName: String,
     val fqName: String,
     val entries: List<String>,
+    val constructorParams: List<KneParam> = emptyList()
 ) : Serializable
 
 data class KneConstructor(
@@ -123,6 +124,7 @@ sealed class KneType : Serializable {
                 is OBJECT, is INTERFACE -> "JAVA_LONG"
                 else -> inner.ffmLayout
             }
+
             is FUNCTION -> "JAVA_LONG" // function pointer address
             is DATA_CLASS -> "ADDRESS" // fields are expanded, not used directly
             BYTE_ARRAY -> "ADDRESS" // pointer to byte buffer + JAVA_INT size
@@ -181,6 +183,7 @@ sealed class KneType : Serializable {
                 is OBJECT, is INTERFACE -> "Long" // 0L = null
                 else -> inner.nativeBridgeType
             }
+
             is FUNCTION -> "Long" // function pointer address
             is DATA_CLASS -> "Long" // fields are expanded, not used directly
             BYTE_ARRAY -> "CPointer<ByteVar>?" // pointer to bytes

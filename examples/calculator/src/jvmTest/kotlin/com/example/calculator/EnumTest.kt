@@ -114,4 +114,34 @@ class EnumTest {
         }
     }
 
+
+    @Test
+    fun `enum with constructor - properties match`() {
+        assertEquals(0, Status.SUCCESS.code)
+        assertEquals(1, Status.ERROR.code)
+        assertEquals(2, Status.PENDING.code)
+    }
+
+    @Test
+    fun `enum with constructor - as return value`() {
+        Calculator(10).use { calc ->
+            assertEquals(Status.SUCCESS, calc.getStatus())
+        }
+        Calculator(-5).use { calc ->
+            assertEquals(Status.ERROR, calc.getStatus())
+        }
+        Calculator(0).use { calc ->
+            assertEquals(Status.PENDING, calc.getStatus())
+        }
+    }
+
+    @Test
+    fun `enum with constructor - as mutable property`() {
+        Calculator(0).use { calc ->
+            assertEquals(Status.SUCCESS, calc.lastStatus)
+            calc.lastStatus = Status.PENDING
+            assertEquals(Status.PENDING, calc.lastStatus)
+        }
+    }
+
 }
