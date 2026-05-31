@@ -370,13 +370,14 @@ class PsiSourceParser {
         val entriesWithValues = entries.mapNotNull { entry ->
             val entryName = entry.name ?: return@mapNotNull null
             val valueText = entry.superTypeListEntries
+                .filterIsInstance<KtSuperTypeCallEntry>()
                 .firstOrNull()
-                ?.let { it as? KtSuperTypeCallEntry }
                 ?.valueArgumentList
                 ?.arguments
                 ?.joinToString(",") { it.getArgumentExpression()?.text ?: "" }
                 ?: ""
-            "$entryName($valueText)"
+            if (valueText.isBlank()) entryName
+            else "$entryName($valueText)"
         }
 
         return KneEnum(name, fq, entriesWithValues, ctorParams)
