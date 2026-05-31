@@ -1,33 +1,14 @@
 package dev.nucleusframework.nna.plugin.analysis
 
-import dev.nucleusframework.nna.plugin.ir.KneClass
-import dev.nucleusframework.nna.plugin.ir.KneConstructor
-import dev.nucleusframework.nna.plugin.ir.KneDataClass
-import dev.nucleusframework.nna.plugin.ir.KneEnum
-import dev.nucleusframework.nna.plugin.ir.KneFunction
-import dev.nucleusframework.nna.plugin.ir.KneInterface
-import dev.nucleusframework.nna.plugin.ir.KneModule
-import dev.nucleusframework.nna.plugin.ir.KneParam
-import dev.nucleusframework.nna.plugin.ir.KneProperty
-import dev.nucleusframework.nna.plugin.ir.KneType
+import dev.nucleusframework.nna.plugin.ir.*
 import org.jetbrains.kotlin.cli.jvm.compiler.KotlinCoreApplicationEnvironment
 import org.jetbrains.kotlin.cli.jvm.compiler.KotlinCoreApplicationEnvironmentMode
 import org.jetbrains.kotlin.cli.jvm.compiler.KotlinCoreProjectEnvironment
 import org.jetbrains.kotlin.com.intellij.openapi.util.Disposer
+import org.jetbrains.kotlin.com.intellij.psi.PsiManager
 import org.jetbrains.kotlin.idea.KotlinFileType
 import org.jetbrains.kotlin.lexer.KtTokens
-import org.jetbrains.kotlin.psi.KtClass
-import org.jetbrains.kotlin.psi.KtDeclaration
-import org.jetbrains.kotlin.psi.KtEnumEntry
-import org.jetbrains.kotlin.psi.KtFunctionType
-import org.jetbrains.kotlin.psi.KtNamedFunction
-import org.jetbrains.kotlin.psi.KtNullableType
-import org.jetbrains.kotlin.psi.KtObjectDeclaration
-import org.jetbrains.kotlin.psi.KtProperty
-import org.jetbrains.kotlin.psi.KtPsiFactory
-import org.jetbrains.kotlin.psi.KtTypeElement
-import org.jetbrains.kotlin.psi.KtTypeReference
-import org.jetbrains.kotlin.psi.KtUserType
+import org.jetbrains.kotlin.psi.*
 import java.io.File
 
 /**
@@ -45,11 +26,11 @@ class PsiSourceParser {
             tmpHome.resolve("product-info.json").writeText("""{"buildNumber":"999.SNAPSHOT"}""")
             System.setProperty("idea.home.path", tmpHome.absolutePath)
 
-            val appEnv = KotlinCoreApplicationEnvironment.create(disposable, KotlinCoreApplicationEnvironmentMode.Production)
+            val appEnv =
+                KotlinCoreApplicationEnvironment.create(disposable, KotlinCoreApplicationEnvironmentMode.Production)
             appEnv.registerFileType(KotlinFileType.INSTANCE, "kt")
             appEnv.registerParserDefinition(org.jetbrains.kotlin.parsing.KotlinParserDefinition())
             val projEnv = KotlinCoreProjectEnvironment(disposable, appEnv)
-            val psiFactory = KtPsiFactory(projEnv.project)
 
             val ktFiles = files.filter { it.extension == "kt" }
             val commonKtFiles = commonFiles.filter { it.extension == "kt" }
@@ -72,7 +53,7 @@ class PsiSourceParser {
                     if (decl !is KtClass) continue
                     val name = decl.name ?: continue
                     val fq = if (parentFq != null) "$parentFq.$name"
-                        else if (pkg.isNotEmpty()) "$pkg.$name" else name
+                    else if (pkg.isNotEmpty()) "$pkg.$name" else name
                     when {
                         decl.isEnum() -> knownEnums[name] = fq
                         decl.isData() -> rawDataClasses[name] = Triple(fq, decl, pkg)
@@ -90,7 +71,10 @@ class PsiSourceParser {
 
             val commonFileSet = commonKtFiles.toSet()
             for (file in commonKtFiles + ktFiles) {
-                val ktFile = psiFactory.createFile(file.name, file.readText())
+
+                val virtualFile = appEnv.localFileSystem.findFileByIoFile(file) ?: continue
+                val ktFile = PsiManager.getInstance(projEnv.project).findFile(virtualFile) as? KtFile ?: continue
+
                 val pkg = ktFile.packageFqName.asString()
                 val classKeysBefore = knownClasses.keys.toSet()
                 val ifaceKeysBefore = knownInterfaces.keys.toSet()
@@ -111,7 +95,9 @@ class PsiSourceParser {
                 for ((name, info) in rawDataClasses) {
                     if (name in knownDataClasses) continue
                     val fields = resolveDataClassFields(info.second, knownEnums, knownClasses, knownDataClasses)
-                    if (fields != null) { knownDataClasses[name] = Pair(info.first, fields); changed = true }
+                    if (fields != null) {
+                        knownDataClasses[name] = Pair(info.first, fields); changed = true
+                    }
                 }
             }
             for ((name, info) in rawDataClasses) {
@@ -130,25 +116,39 @@ class PsiSourceParser {
 
             for (file in commonKtFiles + ktFiles) {
                 val isCommonFile = file in commonFileSet
-                val ktFile = psiFactory.createFile(file.name, file.readText())
+
+                val virtualFile = appEnv.localFileSystem.findFileByIoFile(file) ?: continue
+                val ktFile = PsiManager.getInstance(projEnv.project).findFile(virtualFile) as? KtFile ?: continue
+
                 val pkg = ktFile.packageFqName.asString()
                 if (pkg.isNotEmpty()) packages.add(pkg)
 
-                fun processDeclarations(declarations: List<KtDeclaration>, parentSimpleName: String?, isTopLevel: Boolean) {
+                fun processDeclarations(
+                    declarations: List<KtDeclaration>,
+                    parentSimpleName: String?,
+                    isTopLevel: Boolean,
+                ) {
                     for (decl in declarations) {
                         if (decl.isPrivateOrInternal()) continue
                         when {
-                            decl is KtClass && decl.isEnum() -> parseEnum(decl, pkg)?.let { enumMap.putIfAbsent(it.fqName, it) }
+                            decl is KtClass && decl.isEnum() -> parseEnum(decl, pkg, typeMaps)
+                                ?.let { enumMap.putIfAbsent(it.fqName, it) }
+
                             decl is KtClass && decl.isData() -> {
                                 val name = decl.name ?: continue
                                 val dcInfo = knownDataClasses[name] ?: continue
                                 val fq = dcInfo.first
-                                dataClassMap.putIfAbsent(fq, KneDataClass(name, fq, dcInfo.second, isCommon = name in commonDataClassNames))
+                                dataClassMap.putIfAbsent(
+                                    fq,
+                                    KneDataClass(name, fq, dcInfo.second, isCommon = name in commonDataClassNames)
+                                )
                             }
+
                             decl is KtClass && decl.isInterface() -> {
                                 val iface = parseInterface(decl, pkg, typeMaps, isCommon = isCommonFile) ?: continue
                                 interfaceMap.putIfAbsent(iface.fqName, iface)
                             }
+
                             decl is KtClass -> {
                                 val cls = parseClass(decl, pkg, typeMaps, isCommon = isCommonFile) ?: continue
                                 val correctFq = knownClasses[decl.name ?: ""] ?: cls.fqName
@@ -187,7 +187,15 @@ class PsiSourceParser {
 
             tmpHome.deleteRecursively()
 
-            return KneModule(libName, packages, classMap.values.toList(), dataClassMap.values.toList(), enumMap.values.toList(), functionMap.values.toList(), interfaceMap.values.toList())
+            return KneModule(
+                libName,
+                packages,
+                classMap.values.toList(),
+                dataClassMap.values.toList(),
+                enumMap.values.toList(),
+                functionMap.values.toList(),
+                interfaceMap.values.toList()
+            )
         } finally {
             Disposer.dispose(disposable)
         }
@@ -212,7 +220,7 @@ class PsiSourceParser {
             val type = resolveType(param.typeReference, knownEnums, knownClasses, knownDataClasses) ?: return null
             fields.add(KneParam(name, type))
         }
-        return if (fields.isNotEmpty()) fields else null
+        return fields.ifEmpty { null }
     }
 
     private fun parseClass(ktClass: KtClass, pkg: String, typeMaps: TypeMaps, isCommon: Boolean = false): KneClass? {
@@ -241,11 +249,12 @@ class PsiSourceParser {
         val implementedInterfaces = mutableListOf<String>()
         for (entry in ktClass.superTypeListEntries) {
             val typeName = entry.typeReference?.text?.substringBefore("<")?.trim() ?: continue
-            when {
-                typeName in typeMaps.interfaces -> {
+            when (typeName) {
+                in typeMaps.interfaces -> {
                     typeMaps.interfaces[typeName]?.let { implementedInterfaces.add(it) }
                 }
-                typeName in typeMaps.classes -> {
+
+                in typeMaps.classes -> {
                     if (superClass == null) superClass = typeMaps.classes[typeName]
                 }
             }
@@ -287,11 +296,13 @@ class PsiSourceParser {
                     if (decl.name?.startsWith("_") == true) continue
                     parseFunction(decl, typeMaps)?.let { methods.add(it) }
                 }
+
                 is KtProperty -> {
                     val propName = decl.name ?: continue
                     if (propName in ctorParamNames) continue
                     parseProperty(decl, typeMaps)?.let { properties.add(it) }
                 }
+
                 is KtObjectDeclaration -> if (decl.isCompanion()) {
                     for (cd in decl.declarations) {
                         if (cd.isPrivateOrInternal()) continue
@@ -311,7 +322,12 @@ class PsiSourceParser {
         )
     }
 
-    private fun parseInterface(ktClass: KtClass, pkg: String, typeMaps: TypeMaps, isCommon: Boolean = false): KneInterface? {
+    private fun parseInterface(
+        ktClass: KtClass,
+        pkg: String,
+        typeMaps: TypeMaps,
+        isCommon: Boolean = false,
+    ): KneInterface? {
         val name = ktClass.name ?: return null
         val fq = if (pkg.isNotEmpty()) "$pkg.$name" else name
         val methods = mutableListOf<KneFunction>()
@@ -331,16 +347,39 @@ class PsiSourceParser {
                     if (decl.name?.startsWith("_") == true) continue
                     parseFunction(decl, typeMaps)?.let { methods.add(it) }
                 }
+
                 is KtProperty -> parseProperty(decl, typeMaps)?.let { properties.add(it) }
             }
         }
         return KneInterface(name, fq, methods, properties, superInterfaces, isCommon = isCommon)
     }
 
-    private fun parseEnum(ktClass: KtClass, pkg: String): KneEnum? {
+    private fun parseEnum(ktClass: KtClass, pkg: String, typeMaps: TypeMaps): KneEnum? {
         val name = ktClass.name ?: return null
         val fq = if (pkg.isNotEmpty()) "$pkg.$name" else name
-        return KneEnum(name, fq, ktClass.declarations.filterIsInstance<KtEnumEntry>().mapNotNull { it.name })
+
+        // Parse constructor params from the enum class itself
+        val ctorParams = ktClass.primaryConstructor?.valueParameters?.mapNotNull { param ->
+            val pName = param.name ?: return@mapNotNull null
+            val type = resolveTypeFromMaps(param.typeReference, typeMaps) ?: return@mapNotNull null
+            KneParam(pName, type)
+        } ?: emptyList()
+
+        val entries = ktClass.body?.enumEntries ?: return null
+
+        val entriesWithValues = entries.mapNotNull { entry ->
+            val entryName = entry.name ?: return@mapNotNull null
+            val valueText = entry.superTypeListEntries
+                .firstOrNull()
+                ?.let { it as? KtSuperTypeCallEntry }
+                ?.valueArgumentList
+                ?.arguments
+                ?.joinToString(",") { it.getArgumentExpression()?.text ?: "" }
+                ?: ""
+            "$entryName($valueText)"
+        }
+
+        return KneEnum(name, fq, entriesWithValues, ctorParams)
     }
 
     private fun parseFunction(fn: KtNamedFunction, typeMaps: TypeMaps): KneFunction? {
@@ -360,8 +399,10 @@ class PsiSourceParser {
         val receiverType = if (receiverTypeRef != null) resolveTypeFromMaps(receiverTypeRef, typeMaps) else null
         val isExtension = receiverType != null
 
-        return KneFunction(name, params, returnType, isSuspend = isSuspend,
-            isExtension = isExtension, receiverType = receiverType, isOverride = isOverride)
+        return KneFunction(
+            name, params, returnType, isSuspend = isSuspend,
+            isExtension = isExtension, receiverType = receiverType, isOverride = isOverride
+        )
     }
 
     private fun parseProperty(prop: KtProperty, typeMaps: TypeMaps): KneProperty? {
@@ -381,7 +422,9 @@ class PsiSourceParser {
     ): KneType? {
         val typeElem = typeRef?.typeElement ?: return null
         if (typeElem is KtNullableType) {
-            val inner = resolveTypeElement(typeElem.innerType, knownEnums, knownClasses, knownDataClasses, knownInterfaces) ?: return null
+            val inner =
+                resolveTypeElement(typeElem.innerType, knownEnums, knownClasses, knownDataClasses, knownInterfaces)
+                    ?: return null
             return if (inner == KneType.UNIT || inner is KneType.NULLABLE) inner else KneType.NULLABLE(inner)
         }
         return resolveTypeElement(typeElem, knownEnums, knownClasses, knownDataClasses, knownInterfaces)
@@ -397,9 +440,23 @@ class PsiSourceParser {
             val paramTypes = typeElem.parameters.mapNotNull { p ->
                 resolveType(p.typeReference, knownEnums, knownClasses, knownDataClasses, knownInterfaces)
             }
-            val returnType = resolveType(typeElem.returnTypeReference, knownEnums, knownClasses, knownDataClasses, knownInterfaces) ?: KneType.UNIT
-            val supported = setOf(KneType.INT, KneType.LONG, KneType.DOUBLE, KneType.FLOAT, KneType.BOOLEAN, KneType.BYTE, KneType.SHORT, KneType.STRING)
-            fun ok(t: KneType) = t in supported || t == KneType.BYTE_ARRAY || t is KneType.DATA_CLASS || t is KneType.ENUM || t is KneType.OBJECT || t is KneType.INTERFACE || t is KneType.LIST || t is KneType.SET || t is KneType.MAP
+            val returnType =
+                resolveType(typeElem.returnTypeReference, knownEnums, knownClasses, knownDataClasses, knownInterfaces)
+                    ?: KneType.UNIT
+            val supported = setOf(
+                KneType.INT,
+                KneType.LONG,
+                KneType.DOUBLE,
+                KneType.FLOAT,
+                KneType.BOOLEAN,
+                KneType.BYTE,
+                KneType.SHORT,
+                KneType.STRING
+            )
+
+            fun ok(t: KneType) =
+                t in supported || t == KneType.BYTE_ARRAY || t is KneType.DATA_CLASS || t is KneType.ENUM || t is KneType.OBJECT || t is KneType.INTERFACE || t is KneType.LIST || t is KneType.SET || t is KneType.MAP
+
             fun okRet(t: KneType) = ok(t) || t == KneType.UNIT
             if (paramTypes.any { !ok(it) } || !okRet(returnType)) return null
             return KneType.FUNCTION(paramTypes, returnType)
@@ -428,6 +485,8 @@ class PsiSourceParser {
 
     private fun KtDeclaration.isPrivateOrInternal(): Boolean {
         val mods = modifierList ?: return false
-        return mods.hasModifier(KtTokens.PRIVATE_KEYWORD) || mods.hasModifier(KtTokens.INTERNAL_KEYWORD) || mods.hasModifier(KtTokens.PROTECTED_KEYWORD)
+        return mods.hasModifier(KtTokens.PRIVATE_KEYWORD)
+            || mods.hasModifier(KtTokens.INTERNAL_KEYWORD)
+            || mods.hasModifier(KtTokens.PROTECTED_KEYWORD)
     }
 }
